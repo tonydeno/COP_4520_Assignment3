@@ -6,6 +6,8 @@
 #include<thread>
 #include<mutex>
 #include<numeric>
+#include<chrono>
+#include<set> // Include set for unique sorting
 
 using namespace std;
 
@@ -28,88 +30,81 @@ void generateReading(int& reading) {
 
 class hourlyReport {
 private:
+    mutex mtx_lowest, mtx_highest, mtx_interval; // Fine-grained mutexes
     int current_readings[8] = {0};
-
-    void updateTopFive(int newVal, int* topFive, bool isLowest = true) {
-        lock_guard<mutex> guard(mtx); // Ensure exclusive access to topFive arrays
-        vector<int> values(topFive, topFive + 5);
-
-        // Remove if already exists to ensure uniqueness
-        values.erase(remove(values.begin(), values.end(), newVal), values.end());
-
-        // Add new value
-        values.push_back(newVal);
-
-        // Sort based on whether we're looking for highest or lowest
-        if (isLowest) {
-            sort(values.begin(), values.end()); // Ascending for lowest
-        } else {
-            sort(values.rbegin(), values.rend()); // Descending for highest
-        }
-
-        // Keep only unique top 5
-        values.erase(unique(values.begin(), values.end()), values.end());
-        if (values.size() > 5) {
-            values.resize(5);
-        }
-
-        // Copy back
-        copy(values.begin(), values.end(), topFive);
-    }
+    set<int> all_readings; // Store all readings to determine unique top/bottom 5 temperatures
 
 public:
     int top_five_lowest[5];
     int top_five_highest[5];
 
-    int highest_interval_val = -101;
-    int lowest_interval_val = 71;
+    int highest_interval_val = -100; 
+    int lowest_interval_val = 70; 
     int total_interval_distance = 0;
     int current_highest_interval = 0;
 
-    // Class constructor to initialize arrays with distinct values
-    hourlyReport() {
-        iota(begin(top_five_lowest), end(top_five_lowest), 66); // Initializes with ascending unique dummy values
-        iota(rbegin(top_five_highest), rend(top_five_highest), -104); // Initializes with descending unique dummy values
-    }
+    
+    hourlyReport() {}
 
     void generateReport() {
         int interval = 0;
-        //one iteration = one minute
+        vector<int> interval_max(6, -101), interval_min(6, 71);
+
         for(int minute = 0; minute < 60; ++minute) {
             vector<thread> threads(8);
             for(int i = 0; i < 8; ++i) {
                 threads[i] = thread(generateReading, ref(current_readings[i]));
             }
-            
+
             for(auto& th : threads) {
                 if(th.joinable()) {
                     th.join();
                 }
             }
 
+            cout << "Minute " << minute+1 << " Readings: ";
             for(int i = 0; i < 8; ++i) {
-                updateTopFive(current_readings[i], top_five_lowest);
-                updateTopFive(current_readings[i], top_five_highest, false);
+                cout << current_readings[i] << " ";
+                all_readings.insert(current_readings[i]); // Insert reading into set
             }
+            cout << endl;
 
-            int minVal = *min_element(current_readings, current_readings + 8);
-            int maxVal = *max_element(current_readings, current_readings + 8);
-            if(maxVal - minVal > total_interval_distance) {
-                total_interval_distance = maxVal - minVal;
-                current_highest_interval = interval;
-                highest_interval_val = maxVal;
-                lowest_interval_val = minVal;
-            }
+            interval_max[interval] = max(interval_max[interval], *max_element(current_readings, current_readings + 8));
+            interval_min[interval] = min(interval_min[interval], *min_element(current_readings, current_readings + 8));
 
             if((minute + 1) % 10 == 0) {
+                cout << "End of interval " << interval + 1 << ": Max Temp = " << interval_max[interval]
+                     << ", Min Temp = " << interval_min[interval] << endl;
                 interval++;
             }
+        }
+
+        for(int i = 0; i < 6; ++i) {
+            int interval_difference = interval_max[i] - interval_min[i];
+            if(interval_difference > total_interval_distance) {
+                total_interval_distance = interval_difference;
+                current_highest_interval = i;
+                highest_interval_val = interval_max[i];
+                lowest_interval_val = interval_min[i];
+            }
+        }
+
+        //extract the top 5 highest and lowest unique temperatures
+        auto it = all_readings.begin();
+        for(int i = 0; i < 5 && it != all_readings.end(); ++i, ++it) {
+            top_five_lowest[i] = *it;
+        }
+        
+        it = all_readings.end();
+        for(int i = 0; i < 5 && it != all_readings.begin(); ) {
+            --it; // Move iterator back
+            top_five_highest[i] = *it;
+            ++i; // Only increment i after setting the value
         }
     }
 };
 
 int main() {
-
     cout << "Hourly Report" << endl; 
     hourlyReport report;
     auto start = std::chrono::high_resolution_clock::now();
@@ -131,7 +126,6 @@ int main() {
     }
     cout << endl;
 
-
-    cout << "Interval with the highest variation: " << report.current_highest_interval
-         << " with a variation of " << report.total_interval_distance << endl;
+    cout << "Interval with the highest variation: Interval " << report.current_highest_interval + 1
+         << " with a variation of " << report.total_interval_distance << " degrees." << endl;
 }
